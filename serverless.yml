@@ -1,0 +1,89 @@
+service: image-storage-service
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: python3.9
+  region: us-east-1
+  stage: ${opt:stage, 'dev'}
+  environment:
+    S3_BUCKET_NAME: ${self:custom.bucketName}
+    DYNAMODB_TABLE_NAME: ${self:custom.tableName}
+    PRESIGNED_URL_EXPIRATION: 3600
+  iamRoleStatements:
+    - Effect: Allow
+      Action:
+        - s3:PutObject
+        - s3:GetObject
+        - s3:DeleteObject
+      Resource:
+        - arn:aws:s3:::${self:custom.bucketName}/*
+    - Effect: Allow
+      Action:
+        - dynamodb:PutItem
+        - dynamodb:GetItem
+        - dynamodb:Scan
+        - dynamodb:DeleteItem
+      Resource:
+        - arn:aws:dynamodb:${self:provider.region}:*:table/${self:custom.tableName}
+
+custom:
+  bucketName: image-storage-bucket
+  tableName: image-metadata
+
+functions:
+  uploadImage:
+    handler: lambda_functions/upload_image.lambda_handler
+    events:
+      - http:
+          path: images
+          method: post
+          cors: true
+
+  listImages:
+    handler: lambda_functions/list_images.lambda_handler
+    events:
+      - http:
+          path: images
+          method: get
+          cors: true
+
+  viewImage:
+    handler: lambda_functions/view_image.lambda_handler
+    events:
+      - http:
+          path: images/{image_id}
+          method: get
+          cors: true
+
+  deleteImage:
+    handler: lambda_functions/delete_image.lambda_handler
+    events:
+      - http:
+          path: images/{image_id}
+          method: delete
+          cors: true
+
+resources:
+  Resources:
+    ImageStorageBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:custom.bucketName}
+        VersioningConfiguration:
+          Status: Enabled
+
+    ImageMetadataTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:custom.tableName}
+        AttributeDefinitions:
+          - AttributeName: image_id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: image_id
+            KeyType: HASH
+        BillingMode: PAY_PER_REQUEST
+
+

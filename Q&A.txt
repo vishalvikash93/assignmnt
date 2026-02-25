@@ -1,0 +1,212 @@
+Image Storage Service - Interview Questions and Detailed Answers
+
+1) What problem does this service solve?
+Answer: It provides a scalable way to upload, store, and retrieve images with metadata. Instead of storing image files inside a database or on a single server, it uses S3 for durable object storage and DynamoDB for fast metadata lookups, while Lambda and API Gateway expose simple HTTP endpoints.
+
+2) Who are the users and what are the core use cases?
+Answer: Typical users are applications that need image uploads (e.g., social apps, e-commerce). Core use cases are upload with metadata, list/filter by user or tags, view/download via a presigned URL, and delete from both storage and metadata.
+
+3) Why use Lambda + API Gateway + S3 + DynamoDB?
+Answer: API Gateway handles HTTP routing and auth. Lambda provides serverless compute without managing servers. S3 is optimized for large binary objects with high durability. DynamoDB provides low-latency metadata storage at scale. Together they form a scalable, pay-per-use architecture.
+
+4) What are the tradeoffs vs. a traditional server?
+Answer: Pros: auto-scaling, reduced ops, managed services. Cons: cold starts, service limits, more distributed debugging, and eventual consistency considerations.
+
+5) Walk through the end-to-end flow for POST /images.
+Answer: The client sends base64 image data and metadata to API Gateway. The upload Lambda validates input, generates a UUID, writes the image to S3 under a user-specific key, then writes metadata to DynamoDB with timestamps. It returns the image_id and metadata to the client.
+
+6) How do you handle large files given API Gateway payload limits?
+Answer: API Gateway has payload size limits. For large images, a common design is to generate a presigned S3 PUT URL and upload directly to S3, then call a metadata endpoint to finalize.
+
+7) How does the service ensure durability?
+Answer: S3 stores objects with high durability (eleven 9s). DynamoDB is also highly durable. The combination provides strong persistence for both binary data and metadata.
+
+8) How do you handle eventual consistency between S3 and DynamoDB?
+Answer: Writes are done sequentially: upload to S3 then write metadata. If metadata fails, you can delete the S3 object to keep them in sync. For stronger guarantees, add a retry queue or a compensating transaction.
+
+9) How is the object key structured and why?
+Answer: The key is typically {user_id}/{image_id}. This groups user content and avoids flat key namespaces. It also makes it easier to apply per-user policies or lifecycle rules.
+
+10) What is stored in DynamoDB?
+Answer: The table stores image_id (partition key) and attributes like user_id, title, description, tags, s3_key, s3_url, created_at, and updated_at.
+
+11) Why is image_id the partition key?
+Answer: It provides a unique, stable identifier for each image. It also supports direct lookup for the view/download and delete operations.
+
+12) How do you query by user_id or tag efficiently?
+Answer: You would add a Global Secondary Index (GSI) for user_id and potentially a separate GSI for tags (or use a tag index table). Without GSIs, you would have to scan which is inefficient.
+
+13) How is pagination handled for list endpoints?
+Answer: DynamoDB returns a LastEvaluatedKey. The API returns it to the client as last_evaluated_key, and the client passes it back to continue pagination.
+
+14) How are presigned URLs used?
+Answer: The view endpoint generates a presigned URL for the S3 object. This allows temporary, secure access to a private object without making it public.
+
+15) How do you handle download vs. view?
+Answer: The presigned URL can set response headers like Content-Disposition. If download=true, you set it to attachment; otherwise inline or default behavior.
+
+16) How do you validate inputs?
+Answer: The Lambda checks required fields (user_id, image_data). It validates base64 data, optional fields, and sanitizes tags. Invalid input returns 400.
+
+17) How do you handle errors consistently?
+Answer: Errors follow a standard JSON format with an "error" field and appropriate status codes: 400 for bad input, 404 for missing items, 500 for unexpected failures.
+
+18) What IAM permissions are needed?
+Answer: The upload Lambda needs s3:PutObject and dynamodb:PutItem. The view Lambda needs s3:GetObject and dynamodb:GetItem. The delete Lambda needs s3:DeleteObject and dynamodb:DeleteItem. Least privilege is enforced per function.
+
+19) How do you secure the API?
+Answer: Use API Gateway authorizers (Cognito/JWT). Require user identity in the token and ensure user_id in requests matches the token.
+
+20) How do you prevent unauthorized access to images?
+Answer: Images are private in S3. Clients only receive presigned URLs for their own images. The API checks ownership before generating the URL.
+
+21) How do you prevent malicious uploads?
+Answer: Validate file size and type, scan for malware, and restrict content types. Store metadata about MIME type and enforce it.
+
+22) How do you handle idempotency for uploads?
+Answer: Accept a client-provided idempotency key and store it with the metadata. If the same key is reused, return the existing result.
+
+23) What happens if S3 upload succeeds but DynamoDB write fails?
+Answer: You should delete the object from S3 to avoid orphaned data, or enqueue a cleanup task. A dead-letter queue can capture failures for later remediation.
+
+24) What happens if DynamoDB write succeeds but S3 upload fails?
+Answer: The service should not write metadata before the S3 upload succeeds. If it does happen, you need to delete the metadata record or mark it as invalid.
+
+25) How do you handle delete consistency?
+Answer: Delete from S3 first, then DynamoDB. If DynamoDB delete fails, you can retry. If S3 delete fails, you return an error and keep metadata.
+
+26) How do you handle Lambda cold starts?
+Answer: Keep functions small, reuse AWS SDK clients outside the handler, and consider provisioned concurrency for production latency requirements.
+
+27) How do you manage Lambda timeouts?
+Answer: Set timeouts based on expected workload. Use async processing for heavy tasks (e.g., resizing) and return quickly.
+
+28) How do you package dependencies?
+Answer: For Python, package lambda_functions with dependencies in a deployment artifact or use layers. Keep the package size small.
+
+29) How do you use environment variables?
+Answer: They define endpoints (LocalStack), table/bucket names, and expiration values. This allows environment-specific config without code changes.
+
+30) How does LocalStack help?
+Answer: LocalStack emulates AWS services locally, enabling fast, low-cost integration testing without hitting real AWS resources.
+
+31) What limitations does LocalStack have?
+Answer: It may not perfectly match AWS behavior. Some features can be missing or implemented differently, so critical flows should also be tested on real AWS.
+
+32) How does setup_localstack.sh work?
+Answer: It waits for LocalStack to be healthy, creates the S3 bucket, and creates the DynamoDB table using AWS CLI configured to the LocalStack endpoint.
+
+33) How do you structure tests?
+Answer: Unit tests mock AWS clients for Lambda logic. Integration tests use LocalStack to verify end-to-end behavior for each endpoint.
+
+34) How would you test error scenarios?
+Answer: Inject failures (e.g., mock S3 failures) in unit tests and verify 500 responses. For integration tests, simulate missing objects or invalid input.
+
+35) How do you observe and debug the system?
+Answer: Use CloudWatch logs for Lambdas, structured logging with request IDs, and metrics for latency and error rates.
+
+36) What alarms would you set?
+Answer: High error rate, high latency, and throttling alarms for API Gateway; Lambda error and duration alarms; DynamoDB throttling alarms.
+
+37) How do you scale to millions of images?
+Answer: S3 and DynamoDB scale automatically. For metadata queries, use GSIs and caching. For high traffic, use API Gateway throttling and Lambda concurrency limits.
+
+38) How do you optimize DynamoDB costs?
+Answer: Use on-demand billing for unpredictable workloads, design efficient keys to avoid scans, and return only needed attributes.
+
+39) How do you reduce Lambda costs?
+Answer: Optimize code to reduce execution time, avoid large dependencies, and right-size memory.
+
+40) How do you handle hot partitions?
+Answer: Use a more distributed partition key or add a random suffix. For user_id based access, consider composite keys or a dedicated index.
+
+41) How would you add search by title/description?
+Answer: DynamoDB is not ideal for full-text search. Use OpenSearch or a search service and sync metadata to it.
+
+42) How would you add image resizing?
+Answer: Trigger a separate Lambda on S3 upload events to create thumbnails and store them in another bucket or prefix.
+
+43) How would you implement rate limiting?
+Answer: Use API Gateway usage plans and throttling, or integrate a WAF for more advanced rules.
+
+44) How would you add authentication?
+Answer: Add a JWT authorizer (Cognito or custom). Validate token claims and enforce user ownership in Lambda logic.
+
+45) How would you implement versioning for images?
+Answer: Use S3 versioning or add a version attribute in DynamoDB, and store multiple objects per image_id.
+
+46) How would you handle image metadata updates?
+Answer: Add a PATCH endpoint, validate input, update DynamoDB attributes, and update updated_at.
+
+47) How do you handle binary data in API Gateway?
+Answer: Enable binary support in API Gateway or use base64 encoding in requests/responses.
+
+48) How do you handle CORS?
+Answer: Configure API Gateway responses to include Access-Control-Allow-Origin and related headers.
+
+49) How would you implement audit logs?
+Answer: Record user actions in a separate DynamoDB table or log stream with timestamp and action details.
+
+50) How would you deploy to AWS?
+Answer: Use Serverless Framework with serverless.yml to define functions and resources. Run serverless deploy to provision and update.
+
+51) How do you handle multiple environments?
+Answer: Use stages (dev/staging/prod) and environment-specific variables or separate stacks in Serverless Framework.
+
+52) How do you roll back a bad deployment?
+Answer: Use Serverless Framework rollback or redeploy a previous version. In AWS, use Lambda versions and aliases.
+
+53) How do you keep infrastructure consistent?
+Answer: Use Infrastructure as Code (Serverless Framework or CloudFormation) and keep it in version control.
+
+54) What are the main cost drivers?
+Answer: S3 storage and requests, DynamoDB reads/writes, Lambda execution time, and API Gateway requests.
+
+55) How do you estimate monthly cost?
+Answer: Estimate based on expected request volume, average execution time, and storage size. Use AWS pricing calculators.
+
+56) How does the list endpoint handle filters?
+Answer: It can filter by user_id and tag by scanning or querying. For scalable filtering, add GSIs or a secondary index table.
+
+57) How are tags stored and queried?
+Answer: Tags are stored as a list attribute. For efficient tag queries, add a tag index table or GSI with a tag key.
+
+58) How do you ensure input metadata is safe?
+Answer: Sanitize strings, limit sizes, and validate types. Avoid storing unbounded or untrusted data.
+
+59) How do you handle missing images in view/download?
+Answer: The Lambda checks DynamoDB for metadata and returns 404 if not found. It also verifies the S3 object exists.
+
+60) How do you secure S3 buckets?
+Answer: Block public access, use bucket policies to restrict access to only Lambda roles, and enable encryption.
+
+61) What is the role of API Gateway in this architecture?
+Answer: It provides a stable HTTP interface, routing to Lambda, request validation, throttling, and optional auth.
+
+62) How do you handle retries safely?
+Answer: Ensure operations are idempotent (e.g., same image_id or idempotency key). Avoid duplicate writes.
+
+63) Why not store the image in DynamoDB?
+Answer: DynamoDB is not suited for large binary objects. S3 is optimized for that and is far more cost-effective.
+
+64) How do you keep timestamps consistent?
+Answer: Generate timestamps in UTC at the service layer, and use a consistent ISO 8601 format.
+
+65) How would you add CDN support?
+Answer: Use CloudFront in front of S3 and return CloudFront URLs or signed URLs for controlled access.
+
+66) How would you add soft delete?
+Answer: Add a deleted_at attribute and filter deleted items out of list queries. Optionally remove objects later via a cleanup job.
+
+67) How would you add user quotas?
+Answer: Track usage per user in DynamoDB and reject uploads beyond quota. Optionally maintain a counter or summary table.
+
+68) What is the failure mode when LocalStack is down?
+Answer: The setup script and integration tests fail because the endpoints are unreachable. Unit tests can still run with mocks.
+
+69) How do you handle binary responses in Lambda?
+Answer: Return base64-encoded data with isBase64Encoded flag if sending binary, or use presigned URL for download.
+
+70) What improvements would you prioritize next?
+Answer: Add authentication/authorization, GSIs for efficient queries, direct-to-S3 uploads for large files, and a thumbnail pipeline.
+
